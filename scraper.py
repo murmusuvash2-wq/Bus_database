@@ -1,76 +1,90 @@
 import os
 import json
 import requests
+from bs4 import BeautifulSoup
 
-# GitHub Secrets se credentials lena
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-STATES_TO_SCRAPE = ["WB", "JH", "BR", "OD"]
+STATES_TO_SCRAPE = ["WB"] # Abhi sirf ek state test ke liye
 VISITED_FILE = "visited_urls.json"
 
-def load_visited_urls():
-    if os.path.exists(VISITED_FILE):
-        with open(VISITED_FILE, "r") as f:
-            return json.load(f)
-    return []
+def get_clean_text(url):
+    try:
+        response = requests.get(url, timeout=15)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        # Faltu scripts aur styles hata dein
+        for script in soup(["script", "style"]):
+            script.extract()
+        text = soup.get_text(separator=' ', strip=True)
+        return text[:4000] # AI API limit ke liye shuruat ka text
+    except Exception as e:
+        print(f"Error fetching URL: {e}")
+        return ""
 
-def save_visited_urls(urls):
-    with open(VISITED_FILE, "w") as f:
-        json.dump(urls, f, indent=4)
-
-def extract_data_with_ai(text):
-    # Abhi ke liye dummy data. Baad mein yahan OpenRouter API ka logic aayega.
-    return {"bus_name": "Test Express", "route": "City A to City B", "time": "10:00 AM"}
+def extract_data_with_ai(raw_text):
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    prompt = """
+    You are an expert data extractor. Look at the following raw text from a website.
+    Extract the bus schedule (Bus Name, Route, Departure Time, Arrival Time).
+    Return ONLY a valid JSON array of objects. Do not write any markdown, greetings, or extra text.
+    Example output: [{"bus_name": "Soudamini", "route": "Bankura to Digha", "departure": "06:00 AM", "arrival": "12:00 PM"}]
+    """
+    
+    payload = {
+        "model": "meta-llama/llama-3-8b-instruct:free",
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": f"Raw Text: {raw_text}"}
+        ]
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        ai_response = response.json()
+        result = ai_response['choices'][0]['message']['content']
+        # AI kabhi-kabhi markdown backticks (```json) bhej deta hai, usko hatana
+        clean_json = result.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_json)
+    except Exception as e:
+        print(f"AI Extraction failed: {e}")
+        return [{"error": "Data could not be extracted"}]
 
 def send_to_telegram(state, filepath):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
+    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_BOT_TOKEN}/sendDocument"
     try:
         with open(filepath, "rb") as file:
             files = {"document": file}
-            data = {"chat_id": TELEGRAM_CHAT_ID, "caption": f"✅ New Bus Data for: {state}"}
-            response = requests.post(url, files=files, data=data)
-            if response.status_code == 200:
-                print(f"[{state}] File successfully sent to Telegram!")
-            else:
-                print(f"[{state}] Telegram error: {response.text}")
+            data = {"chat_id": TELEGRAM_CHAT_ID, "caption": f"🤖 AI Data Extracted for: {state}"}
+            requests.post(url, files=files, data=data)
     except Exception as e:
-        print(f"[{state}] Failed to send file: {e}")
+        pass
 
 def main():
-    visited_urls = load_visited_urls()
+    # Test ke liye ek fake URL jo text return karega (Isko baad mein real link se replace karenge)
+    test_url = "[https://example.com](https://example.com)" 
     
     for state in STATES_TO_SCRAPE:
-        print(f"\n🚀 Processing State: {state}")
-        state_data = []
-        state_file = f"{state}_busdata.json"
+        print(f"Fetching HTML for {state}...")
+        raw_text = get_clean_text(test_url)
         
-        # Test ke liye ek dummy URL
-        test_url = f"https://example.com/{state.lower()}_buses"
-        
-        if test_url in visited_urls:
-            print(f"Skipping {test_url}, already scraped.")
-            continue
+        if raw_text:
+            print("Sending text to OpenRouter AI...")
+            extracted_json = extract_data_with_ai(raw_text)
             
-        print(f"Scraping data from {test_url}...")
-        
-        # Data extract karna aur save karna
-        extracted_json = extract_data_with_ai("Sample page text")
-        state_data.append(extracted_json)
-        visited_urls.append(test_url)
-        
-        # JSON file save karna
-        with open(state_file, "w") as f:
-            json.dump(state_data, f, indent=4)
-            
-        # File Telegram par push karna
-        send_to_telegram(state, state_file)
-        
-    # Memory update karna taaki bot URL yaad rakhe
-    save_visited_urls(visited_urls)
-    print("\n🎉 Scraping Job Completed!")
+            state_file = f"{state}_busdata.json"
+            with open(state_file, "w") as f:
+                json.dump(extracted_json, f, indent=4)
+                
+            send_to_telegram(state, state_file)
+            print("Done! Check Telegram.")
 
 if __name__ == "__main__":
     main()
-  
+    
