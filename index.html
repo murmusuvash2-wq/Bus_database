@@ -3,56 +3,124 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live Bus Timetable</title>
+    <title>All India Bus Search</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f7f6; }
-        h2 { color: #333; text-align: center; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
-        th, td { padding: 15px; border-bottom: 1px solid #ddd; text-align: left; }
-        th { background-color: #28a745; color: white; }
-        tr:hover { background-color: #f1f1f1; }
+        * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { margin: 0; padding: 20px; background-color: #f0f2f5; color: #333; }
+        
+        /* Header & Search Bar */
+        .header { text-align: center; margin-bottom: 20px; }
+        .header h1 { color: #1a73e8; margin-bottom: 10px; }
+        .search-box {
+            width: 100%; max-width: 600px; padding: 15px; font-size: 16px;
+            border: 2px solid #1a73e8; border-radius: 25px; outline: none;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: 0.3s;
+        }
+        .search-box:focus { box-shadow: 0 4px 12px rgba(26, 115, 232, 0.3); }
+
+        /* Table Styling */
+        .table-container { width: 100%; max-width: 1000px; margin: 20px auto; overflow-x: auto; background: white; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        table { width: 100%; border-collapse: collapse; white-space: nowrap; }
+        th, td { padding: 15px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #1a73e8; color: white; position: sticky; top: 0; }
+        tr:hover { background-color: #f8f9fa; }
+        
+        /* Badges */
+        .city-badge { font-weight: bold; color: #0d47a1; }
+        .time-badge { background: #e8f0fe; color: #1a73e8; padding: 5px 10px; border-radius: 15px; font-size: 14px; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <h2>🚌 Automated Bus Timetable Dashboard</h2>
-    
-    <table>
-        <thead>
-            <tr>
-                <th>Bus Name</th>
-                <th>Route</th>
-                <th>Departure Time</th>
-                <th>Arrival Time</th>
-            </tr>
-        </thead>
-        <tbody id="bus-data">
-            <tr><td colspan="4" style="text-align: center;">Loading data from GitHub...</td></tr>
-        </tbody>
-    </table>
+    <div class="header">
+        <h1>🚌 Live Bus Timetable</h1>
+        <p>Apna shehar (City) likhein aur bus dhundhein</p>
+        <input type="text" id="searchInput" class="search-box" placeholder="Search City (e.g. Kolkata, Ranchi)...">
+    </div>
+
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Bus Name</th>
+                    <th>From (Source)</th>
+                    <th>To (Destination)</th>
+                    <th>Departure</th>
+                    <th>Arrival</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+                <tr><td colspan="5" style="text-align: center;">Loading buses across India...</td></tr>
+            </tbody>
+        </table>
+    </div>
 
     <script>
-        // Aapke JSON file ko yahan se read karega
-        fetch('WB_busdata.json')
-            .then(response => response.json())
-            .then(data => {
-                const tableBody = document.getElementById('bus-data');
-                tableBody.innerHTML = ''; // Loading text hata dega
-                
-                // Har bus entry ke liye ek nayi row banayega
-                data.forEach(bus => {
-                    const row = `<tr>
-                        <td>${bus.bus_name || 'N/A'}</td>
-                        <td>${bus.route || 'N/A'}</td>
-                        <td>${bus.time || bus.departure || 'N/A'}</td>
-                        <td>${bus.arrival || 'N/A'}</td>
-                    </tr>`;
-                    tableBody.innerHTML += row;
-                });
-            })
-            .catch(error => {
-                document.getElementById('bus-data').innerHTML = '<tr><td colspan="4">Error loading data! Is JSON file missing?</td></tr>';
+        // All India State Codes
+        const states = ["AP", "AR", "AS", "BR", "CG", "GA", "GJ", "HR", "HP", "JH", "KA", "KL", "MP", "MH", "MN", "ML", "MZ", "NL", "OD", "PB", "RJ", "SK", "TN", "TG", "TR", "UP", "UK", "WB"];
+        
+        let allBuses = []; // Poore desh ki buses yahan save hongi
+
+        // 1. Data Load Karne Ka Smart Engine
+        async function loadAllData() {
+            const tableBody = document.getElementById('tableBody');
+            
+            // Ek sath saare states ki json file fetch karna
+            const fetchPromises = states.map(state => 
+                fetch(`${state}_busdata.json`)
+                    .then(response => response.ok ? response.json() : []) // Agar file nahi mili toh khali array dega
+                    .catch(() => [])
+            );
+
+            const results = await Promise.all(fetchPromises);
+            
+            // Saare states ka data ek single list mein jodna
+            results.forEach(stateData => {
+                if(stateData && stateData.length > 0) {
+                    allBuses = allBuses.concat(stateData);
+                }
             });
+
+            renderTable(allBuses);
+        }
+
+        // 2. Data Ko Table Mein Dikhane Ka Function
+        function renderTable(dataToDisplay) {
+            const tbody = document.getElementById('tableBody');
+            tbody.innerHTML = ''; 
+
+            if(dataToDisplay.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: red;">Koi bus nahi mili ya data upload ho raha hai.</td></tr>';
+                return;
+            }
+
+            dataToDisplay.forEach(bus => {
+                const row = `<tr>
+                    <td><strong>${bus.bus_name}</strong></td>
+                    <td class="city-badge">${bus.source_city}</td>
+                    <td class="city-badge">${bus.destination_city}</td>
+                    <td><span class="time-badge">🕒 ${bus.departure}</span></td>
+                    <td>${bus.arrival !== 'N/A' ? bus.arrival : '-'}</td>
+                </tr>`;
+                tbody.innerHTML += row;
+            });
+        }
+
+        // 3. Search Bar Ka Magic (Auto-Filter)
+        document.getElementById('searchInput').addEventListener('input', function(e) {
+            const searchText = e.target.value.toLowerCase().trim();
+            
+            // Source ya Destination kisi mein bhi city ka naam ho toh filter kar lega
+            const filteredBuses = allBuses.filter(bus => 
+                (bus.source_city && bus.source_city.toLowerCase().includes(searchText)) ||
+                (bus.destination_city && bus.destination_city.toLowerCase().includes(searchText))
+            );
+            
+            renderTable(filteredBuses);
+        });
+
+        // Jaise hi website khule, data load karna shuru karo
+        loadAllData();
     </script>
 
 </body>
