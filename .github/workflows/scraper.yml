@@ -1,0 +1,38 @@
+name: Advanced Bus Scraper
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # Roz raat 2 baje chalega
+  workflow_dispatch: # Manual run button
+
+jobs:
+  scrape-data:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Required Libraries
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run Scraper Script
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python scraper.py
+
+      - name: Auto-Commit Visited URLs
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "Auto-update visited URLs database"
+          file_pattern: 'visited_urls.json'
+          
