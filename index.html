@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Bus Timetable</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f7f6; }
+        h2 { color: #333; text-align: center; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        th, td { padding: 15px; border-bottom: 1px solid #ddd; text-align: left; }
+        th { background-color: #28a745; color: white; }
+        tr:hover { background-color: #f1f1f1; }
+    </style>
+</head>
+<body>
+
+    <h2>🚌 Automated Bus Timetable Dashboard</h2>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Bus Name</th>
+                <th>Route</th>
+                <th>Departure Time</th>
+                <th>Arrival Time</th>
+            </tr>
+        </thead>
+        <tbody id="bus-data">
+            <tr><td colspan="4" style="text-align: center;">Loading data from GitHub...</td></tr>
+        </tbody>
+    </table>
+
+    <script>
+        // Aapke JSON file ko yahan se read karega
+        fetch('WB_busdata.json')
+            .then(response => response.json())
+            .then(data => {
+                const tableBody = document.getElementById('bus-data');
+                tableBody.innerHTML = ''; // Loading text hata dega
+                
+                // Har bus entry ke liye ek nayi row banayega
+                data.forEach(bus => {
+                    const row = `<tr>
+                        <td>${bus.bus_name || 'N/A'}</td>
+                        <td>${bus.route || 'N/A'}</td>
+                        <td>${bus.time || bus.departure || 'N/A'}</td>
+                        <td>${bus.arrival || 'N/A'}</td>
+                    </tr>`;
+                    tableBody.innerHTML += row;
+                });
+            })
+            .catch(error => {
+                document.getElementById('bus-data').innerHTML = '<tr><td colspan="4">Error loading data! Is JSON file missing?</td></tr>';
+            });
+    </script>
+
+</body>
+</html>
