@@ -5,6 +5,9 @@ on:
     - cron: '0 2 * * *' # Roz raat 2 baje (Server time)
   workflow_dispatch: # Manual button
 
+permissions:
+  contents: write
+
 jobs:
   scrape-and-push:
     runs-on: ubuntu-latest
@@ -33,4 +36,3 @@ jobs:
         with:
           commit_message: "Updated visited URLs memory"
           file_pattern: 'visited_urls.json'
-          
