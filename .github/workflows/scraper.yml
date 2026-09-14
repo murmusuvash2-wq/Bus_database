@@ -2,27 +2,38 @@ name: Automated Bus Scraper
 
 on:
   schedule:
-    - cron: '0 2 * * *'   # Daily 2 AM UTC
-  workflow_dispatch:     # Manual run button
+    - cron: "0 2 * * *"   # Daily 02:00 UTC = 07:30 AM IST
+
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: bus-scraper
+  cancel-in-progress: true
+
 jobs:
   scrape-and-push:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
+          cache: "pip"
 
       - name: Install Dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run Scraper
         env:
@@ -31,7 +42,16 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-        run: python scraper.py
+        run: |
+          python scraper.py
+
+      - name: Check Generated Files
+        run: |
+          echo "Checking output files..."
+          test -f data/bus.db || echo "Warning: data/bus.db not found"
+          test -f export/buses.json || echo "Warning: export/buses.json not found"
+          ls -lah data/ || true
+          ls -lah export/ || true
 
       - name: Commit Data Files
         uses: stefanzweifel/git-auto-commit-action@v5
@@ -40,5 +60,6 @@ jobs:
           file_pattern: |
             data/bus.db
             export/buses.json
-            *_busdata.json
+            "*_busdata.json"
             visited_urls.json
+            
