@@ -2,8 +2,8 @@ name: Automated Bus Scraper
 
 on:
   schedule:
-    - cron: '0 2 * * *' # Roz raat 2 baje (Server time)
-  workflow_dispatch: # Manual button
+    - cron: '0 2 * * *'   # Daily 2 AM UTC
+  workflow_dispatch:     # Manual run button
 
 permissions:
   contents: write
@@ -11,28 +11,34 @@ permissions:
 jobs:
   scrape-and-push:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: Install Dependencies
-        run: pip install requests beautifulsoup4
+        run: pip install -r requirements.txt
 
-      - name: Run Scraper Script
+      - name: Run Scraper
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
         run: python scraper.py
 
-      - name: Commit Updated Visited URLs
-        uses: stefanzweifel/git-auto-commit-action@v4
+      - name: Commit Data Files
+        uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Updated visited URLs memory"
-          file_pattern: 'visited_urls.json'
+          commit_message: "Auto-update bus data [skip ci]"
+          file_pattern: |
+            data/bus.db
+            export/buses.json
+            *_busdata.json
+            visited_urls.json

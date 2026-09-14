@@ -2,151 +2,200 @@ import os
 import json
 import time
 import requests
-import concurrent.futures
-from bs4 import BeautifulSoup
+from pathlib import Path
+from datetime import datetime
 
-# === SECRETS & KEYS ===
+from db import init_db, upsert_buses, export_json, clear_source
+
+# === SECRETS ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# === ALL INDIA STATES (URLS) ===
-STATE_URLS = {
-    "AP": "https://example.com/ap", "AR": "https://example.com/ar",
-    "AS": "https://example.com/as", "BR": "https://example.com/br",
-    "CG": "https://example.com/cg", "GA": "https://example.com/ga",
-    "GJ": "https://example.com/gj", "HR": "https://example.com/hr",
-    "HP": "https://example.com/hp", "JH": "https://example.com/jh",
-    "KA": "https://example.com/ka", "KL": "https://example.com/kl",
-    "MP": "https://example.com/mp", "MH": "https://example.com/mh",
-    "MN": "https://example.com/mn", "ML": "https://example.com/ml",
-    "MZ": "https://example.com/mz", "NL": "https://example.com/nl",
-    "OD": "https://example.com/od", "PB": "https://example.com/pb",
-    "RJ": "https://example.com/rj", "SK": "https://example.com/sk",
-    "TN": "https://example.com/tn", "TG": "https://example.com/tg",
-    "TR": "https://example.com/tr", "UP": "https://example.com/up",
-    "UK": "https://example.com/uk", "WB": "https://example.com/wb"
-}
+# Kaggle datasets (username/dataset-slug)
+KAGGLE_DATASETS = [
+    # Add more later after token is set
+    # "ayushkhaire/indian-cities-buses-routes-and-prices",
+]
 
-# 1. STEALTH MODE (Website ke guards se bachne ka bhes)
-def get_stealthy_text(url):
+def send_telegram(text):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[Telegram] skipped (no secrets)")
+        return
     try:
-        if "example.com" in url:
-            return "" # Fake links ko skip karo
-            
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5"
-        }
-        
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200:
-            return ""
-            
-        soup = BeautifulSoup(response.content, 'html.parser')
-        for script in soup(["script", "style"]):
-            script.extract()
-        
-        text = soup.get_text(separator=' ', strip=True)
-        return text[:4000] # Token limit protect karna
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text[:4000]}, timeout=20)
     except Exception as e:
-        return ""
+        print("[Telegram] error:", e)
 
-# 2. AI EXTRACTOR (City & Interstate Route Smartness)
-def extract_data_with_ai(raw_text):
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    prompt = """
-    You are a precise data extractor for public bus schedules.
-    Extract the following from the text: Bus Name, Source City (From), Destination City (To), Departure Time, and Arrival Time.
-    Even if the route crosses state borders (Interstate), extract the exact city names.
-    Do NOT include prices, AC/Non-AC, or extra text.
-    Return ONLY a valid JSON array of objects.
-    Example: [{"bus_name": "Soudamini", "source_city": "Kolkata", "destination_city": "Ranchi", "departure": "06:00 AM", "arrival": "02:00 PM"}]
-    """
-    
-    payload = {
-        "model": "meta-llama/llama-3-8b-instruct:free",
-        "messages": [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": f"Raw Text: {raw_text}"}
-        ]
-    }
-    
+def load_kaggle_datasets():
+    """Download Kaggle datasets if credentials exist."""
+    rows = []
+    kaggle_user = os.getenv("KAGGLE_USERNAME")
+    kaggle_key = os.getenv("KAGGLE_KEY")
+    if not kaggle_user or not kaggle_key:
+        print("[Kaggle] No credentials. Skipping Kaggle download.")
+        return rows
+
     try:
-        response = requests.post(url, headers=headers, json=payload)
-        result = response.json()['choices'][0]['message']['content']
-        clean_json = result.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_json)
-    except:
-        return []
+        from kaggle.api.kaggle_api_extended import KaggleApi
+        api = KaggleApi()
+        api.authenticate()
+    except Exception as e:
+        print("[Kaggle] Auth failed:", e)
+        return rows
 
-# 3. SMART DATA CLEANER (Kachra Safai & Auto-Fix)
-def smart_data_cleaner(ai_json_data):
-    cleaned_data = []
-    for bus in ai_json_data:
-        # Check rule: Source, Destination aur Departure zaroori hain
-        if bus.get("source_city") and bus.get("destination_city") and bus.get("departure"):
-            # City names ko Title Case (Kolkata) karna
-            bus["source_city"] = str(bus["source_city"]).strip().title()
-            bus["destination_city"] = str(bus["destination_city"]).strip().title()
-            
-            # Agar naam missing hai toh default naam dena
-            bus["bus_name"] = str(bus.get("bus_name", "Local/Govt Bus")).strip().title()
-            bus["arrival"] = str(bus.get("arrival", "N/A")).strip()
-            
-            cleaned_data.append(bus)
-    return cleaned_data
+    Path("data/kaggle").mkdir(parents=True, exist_ok=True)
 
-# 4. TELEGRAM ALERT
-def send_to_telegram(state, filepath):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
-    try:
-        with open(filepath, "rb") as file:
-            files = {"document": file}
-            data = {"chat_id": TELEGRAM_CHAT_ID, "caption": f"✅ {state} Bus Data Updated!"}
-            requests.post(url, files=files, data=data)
-    except:
-        pass
+    for ds in KAGGLE_DATASETS:
+        try:
+            print(f"[Kaggle] Downloading {ds} ...")
+            api.dataset_download_files(ds, path="data/kaggle", unzip=True, quiet=False)
+            print(f"[Kaggle] Done: {ds}")
+        except Exception as e:
+            print(f"[Kaggle] Failed {ds}:", e)
 
-# 5. SPIDER WORKER (Ek bot ka task)
-def spider_worker(state, target_url):
-    raw_text = get_stealthy_text(target_url)
-    if raw_text:
-        ai_data = extract_data_with_ai(raw_text)
-        final_clean_data = smart_data_cleaner(ai_data)
-        
-        if final_clean_data:
-            filepath = f"{state}_busdata.json"
-            with open(filepath, "w") as f:
-                json.dump(final_clean_data, f, indent=4)
-            send_to_telegram(state, filepath)
-            print(f"🕸️ [{state}] Success: Clean data saved!")
-            return True
-    return False
+    # Try to parse common CSV patterns
+    import pandas as pd
+    for csv_path in Path("data/kaggle").rglob("*.csv"):
+        try:
+            df = pd.read_csv(csv_path, low_memory=False)
+            cols = {c.lower().strip(): c for c in df.columns}
 
-# 6. MASTER ENGINE (Spider Bots Release)
+            def col(*names):
+                for n in names:
+                    if n in cols:
+                        return cols[n]
+                return None
+
+            from_c = col("from", "source", "source_city", "origin")
+            to_c = col("to", "destination", "destination_city", "dest")
+            dep_c = col("departure", "departure_time", "dep_time", "start_time")
+            arr_c = col("arrival", "arrival_time", "arr_time", "end_time")
+            op_c = col("operator", "operator_name", "travels", "bus_operator")
+            name_c = col("bus_name", "bus", "service_name", "name")
+            type_c = col("bus_type", "type", "ac_type")
+
+            if not from_c or not to_c:
+                continue
+
+            for _, r in df.iterrows():
+                src = str(r.get(from_c, "")).strip().title()
+                dst = str(r.get(to_c, "")).strip().title()
+                if not src or not dst or src == "Nan" or dst == "Nan":
+                    continue
+                rows.append({
+                    "state": None,
+                    "bus_name": str(r.get(name_c, "Private Bus")).strip().title() if name_c else "Private Bus",
+                    "operator_type": "Private",
+                    "operator_name": str(r.get(op_c, "Unknown")).strip().title() if op_c else "Unknown",
+                    "source_city": src,
+                    "destination_city": dst,
+                    "departure_time": str(r.get(dep_c, "N/A")).strip() if dep_c else "N/A",
+                    "arrival_time": str(r.get(arr_c, "N/A")).strip() if arr_c else "N/A",
+                    "route": f"{src} - {dst}",
+                    "stoppages": [],
+                    "bus_type": str(r.get(type_c, "")).strip() if type_c else "",
+                    "frequency": "",
+                    "source": f"kaggle:{csv_path.name}"
+                })
+        except Exception as e:
+            print(f"[Kaggle] Parse error {csv_path}:", e)
+
+    return rows
+
+def load_sample_data():
+    """Fallback sample so system works even without Kaggle."""
+    return [
+        {
+            "state": "WB",
+            "bus_name": "Soudamini Express",
+            "operator_type": "Private",
+            "operator_name": "Soudamini Travels",
+            "source_city": "Kolkata",
+            "destination_city": "Ranchi",
+            "departure_time": "06:00 AM",
+            "arrival_time": "02:00 PM",
+            "route": "Kolkata - Durgapur - Asansol - Ranchi",
+            "stoppages": ["Kolkata", "Durgapur", "Asansol", "Ranchi"],
+            "bus_type": "Non-AC Seater",
+            "frequency": "Daily",
+            "source": "sample"
+        },
+        {
+            "state": "WB",
+            "bus_name": "SBSTC Ordinary",
+            "operator_type": "Govt",
+            "operator_name": "SBSTC",
+            "source_city": "Kolkata",
+            "destination_city": "Digha",
+            "departure_time": "07:30 AM",
+            "arrival_time": "01:00 PM",
+            "route": "Kolkata - Contai - Digha",
+            "stoppages": ["Kolkata", "Contai", "Digha"],
+            "bus_type": "Non-AC",
+            "frequency": "Daily",
+            "source": "sample"
+        },
+        {
+            "state": "JH",
+            "bus_name": "Jharkhand Express",
+            "operator_type": "Private",
+            "operator_name": "Local Travels",
+            "source_city": "Ranchi",
+            "destination_city": "Jamshedpur",
+            "departure_time": "08:00 AM",
+            "arrival_time": "12:00 PM",
+            "route": "Ranchi - Jamshedpur",
+            "stoppages": ["Ranchi", "Jamshedpur"],
+            "bus_type": "AC",
+            "frequency": "Daily",
+            "source": "sample"
+        },
+    ]
+
 def main():
-    print("🚀 Releasing Spider Bots across India...")
-    
-    # max_workers=5 (Ek sath 5 states par scan chalega)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = []
-        for state, url in STATE_URLS.items():
-            if "example.com" not in url:  # Sirf asli links par jayega
-                futures.append(executor.submit(spider_worker, state, url))
-                time.sleep(1)  # Bonus: 1 second delay taaki API par achanak load na pade
-                
-        for future in concurrent.futures.as_completed(futures):
-            pass # Background me save aur alert ho gaya
+    print("🚀 Bus Database Scraper starting...")
+    init_db()
 
-    print("🎉 All Spiders Returned. Database Updated!")
+    all_rows = []
+
+    # 1. Kaggle (if token present)
+    kaggle_rows = load_kaggle_datasets()
+    if kaggle_rows:
+        clear_source("kaggle")  # will clear all kaggle:* if needed later
+        # clear by prefix roughly
+        all_rows.extend(kaggle_rows)
+        print(f"[Kaggle] Loaded {len(kaggle_rows)} rows")
+    else:
+        print("[Kaggle] No data loaded")
+
+    # 2. Sample fallback so frontend always has something
+    sample = load_sample_data()
+    clear_source("sample")
+    all_rows.extend(sample)
+    print(f"[Sample] Loaded {len(sample)} rows")
+
+    # Save to DB
+    inserted = upsert_buses(all_rows)
+    print(f"✅ Inserted/Updated {inserted} rows into SQLite")
+
+    # Export for GitHub Pages
+    count = export_json("export/buses.json")
+    print(f"✅ Exported {count} buses to export/buses.json")
+
+    # Also keep state-wise json for compatibility with old index.html
+    Path("export").mkdir(exist_ok=True)
+    by_state = {}
+    for r in all_rows:
+        st = r.get("state") or "ALL"
+        by_state.setdefault(st, []).append(r)
+    for st, items in by_state.items():
+        with open(f"{st}_busdata.json", "w", encoding="utf-8") as f:
+            json.dump(items, f, indent=2, ensure_ascii=False)
+
+    send_telegram(f"✅ Bus DB updated\nRows: {inserted}\nExported: {count}\nTime: {datetime.utcnow().isoformat()}Z")
+    print("🎉 Done")
 
 if __name__ == "__main__":
     main()
-    
