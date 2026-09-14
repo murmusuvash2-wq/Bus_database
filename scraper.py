@@ -1,11 +1,10 @@
 import os
 import json
-import time
 import requests
 from pathlib import Path
 from datetime import datetime
 
-from db import init_db, upsert_buses, export_json, clear_source
+from db import init_db, upsert_buses, export_json, clear_source, get_conn
 
 # === SECRETS ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -14,8 +13,8 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # Kaggle datasets (username/dataset-slug)
 KAGGLE_DATASETS = [
-    # Add more later after token is set
-    # "ayushkhaire/indian-cities-buses-routes-and-prices",
+    "rohitgds/pan-india-bus-routes-35k-schedules-1000-cities",
+    "ayushkhaire/indian-cities-buses-routes-and-prices",
 ]
 
 def send_telegram(text):
@@ -27,6 +26,12 @@ def send_telegram(text):
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text[:4000]}, timeout=20)
     except Exception as e:
         print("[Telegram] error:", e)
+
+def clear_kaggle_sources():
+    conn = get_conn()
+    conn.execute("DELETE FROM buses WHERE source LIKE 'kaggle:%'")
+    conn.commit()
+    conn.close()
 
 def load_kaggle_datasets():
     """Download Kaggle datasets if credentials exist."""
@@ -55,7 +60,6 @@ def load_kaggle_datasets():
         except Exception as e:
             print(f"[Kaggle] Failed {ds}:", e)
 
-    # Try to parse common CSV patterns
     import pandas as pd
     for csv_path in Path("data/kaggle").rglob("*.csv"):
         try:
@@ -74,21 +78,30 @@ def load_kaggle_datasets():
             arr_c = col("arrival", "arrival_time", "arr_time", "end_time")
             op_c = col("operator", "operator_name", "travels", "bus_operator")
             name_c = col("bus_name", "bus", "service_name", "name")
-            type_c = col("bus_type", "type", "ac_type")
+            type_c = col("bus type", "bus_type", "type", "ac_type")
 
             if not from_c or not to_c:
+                print(f"[Kaggle] Skip (no from/to): {csv_path.name} cols={list(df.columns)}")
                 continue
 
+            count_before = len(rows)
             for _, r in df.iterrows():
                 src = str(r.get(from_c, "")).strip().title()
                 dst = str(r.get(to_c, "")).strip().title()
-                if not src or not dst or src == "Nan" or dst == "Nan":
+                if not src or not dst or src.lower() in ("nan", "none", "") or dst.lower() in ("nan", "none", ""):
                     continue
+
+                op_name = str(r.get(op_c, "Unknown")).strip().title() if op_c else "Unknown"
+                # Heuristic: govt keywords
+                govt_kw = ("sbstc", "nbstc", "upsrtc", "ksrtc", "msrtc", "gsrtc", "rsrtc",
+                           "hrtc", "osrtc", "apsrtc", "tgsrtc", "bmtc", "dtc", "rtc", "state")
+                is_govt = any(k in op_name.lower() for k in govt_kw)
+
                 rows.append({
                     "state": None,
-                    "bus_name": str(r.get(name_c, "Private Bus")).strip().title() if name_c else "Private Bus",
-                    "operator_type": "Private",
-                    "operator_name": str(r.get(op_c, "Unknown")).strip().title() if op_c else "Unknown",
+                    "bus_name": str(r.get(name_c, op_name)).strip().title() if name_c else op_name,
+                    "operator_type": "Govt" if is_govt else "Private",
+                    "operator_name": op_name,
                     "source_city": src,
                     "destination_city": dst,
                     "departure_time": str(r.get(dep_c, "N/A")).strip() if dep_c else "N/A",
@@ -99,13 +112,13 @@ def load_kaggle_datasets():
                     "frequency": "",
                     "source": f"kaggle:{csv_path.name}"
                 })
+            print(f"[Kaggle] Parsed {len(rows) - count_before} rows from {csv_path.name}")
         except Exception as e:
             print(f"[Kaggle] Parse error {csv_path}:", e)
 
     return rows
 
 def load_sample_data():
-    """Fallback sample so system works even without Kaggle."""
     return [
         {
             "state": "WB",
@@ -160,31 +173,27 @@ def main():
 
     all_rows = []
 
-    # 1. Kaggle (if token present)
+    # 1. Kaggle
     kaggle_rows = load_kaggle_datasets()
     if kaggle_rows:
-        clear_source("kaggle")  # will clear all kaggle:* if needed later
-        # clear by prefix roughly
+        clear_kaggle_sources()
         all_rows.extend(kaggle_rows)
         print(f"[Kaggle] Loaded {len(kaggle_rows)} rows")
     else:
         print("[Kaggle] No data loaded")
 
-    # 2. Sample fallback so frontend always has something
+    # 2. Sample fallback
     sample = load_sample_data()
     clear_source("sample")
     all_rows.extend(sample)
     print(f"[Sample] Loaded {len(sample)} rows")
 
-    # Save to DB
     inserted = upsert_buses(all_rows)
     print(f"✅ Inserted/Updated {inserted} rows into SQLite")
 
-    # Export for GitHub Pages
     count = export_json("export/buses.json")
     print(f"✅ Exported {count} buses to export/buses.json")
 
-    # Also keep state-wise json for compatibility with old index.html
     Path("export").mkdir(exist_ok=True)
     by_state = {}
     for r in all_rows:
@@ -194,7 +203,13 @@ def main():
         with open(f"{st}_busdata.json", "w", encoding="utf-8") as f:
             json.dump(items, f, indent=2, ensure_ascii=False)
 
-    send_telegram(f"✅ Bus DB updated\nRows: {inserted}\nExported: {count}\nTime: {datetime.utcnow().isoformat()}Z")
+    send_telegram(
+        f"✅ Bus DB updated\n"
+        f"Kaggle rows: {len(kaggle_rows)}\n"
+        f"Total inserted: {inserted}\n"
+        f"Exported: {count}\n"
+        f"Time: {datetime.utcnow().isoformat()}Z"
+    )
     print("🎉 Done")
 
 if __name__ == "__main__":
